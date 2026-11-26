@@ -2,31 +2,18 @@
 from __future__ import annotations
 
 import json
-import time
 from dataclasses import asdict, replace
 
 import matplotlib.pyplot as plt
 import numpy as np
 import streamlit as st
 import streamlit.components.v1 as components
-from streamlit_sortables import sort_items
 
 from image_processing import (
-    ACTIVATIONS, KERNELS, PLAYGROUND_OPERATIONS, POOLING, PREPROCESSING, Layer, Stage,
+    ACTIVATIONS, KERNELS, PLAYGROUND_OPERATIONS, POOLING, PREPROCESSING, Layer,
     apply_operation, default_network, make_samples, run_network,
 )
-from operation_view import operation_html
-
-
-BLOCK_STYLE = """
-.sortable-component { padding: 0; }
-.sortable-container { background: transparent; }
-.sortable-item, .sortable-item:hover {
-    background: #dceeff; color: #123556; border: 2px solid #78b4e8;
-    border-left: 9px solid #2979c1; border-radius: 8px;
-    padding: 14px; margin: 8px 0; font-weight: 600; cursor: grab;
-}
-"""
+from operation_view import network_html, operation_html
 
 
 def draw_grid(
@@ -91,40 +78,6 @@ def draw_grid(
         st.caption("Display clipped to 0–255; calculations and printed values are unchanged.")
 
 
-def inspect_kernel(stage: Stage, show_values: bool, cell_size: int, rescale: bool, key: str):
-    if stage.convolution.size == 0:
-        st.info("This kernel has no valid positions. Adjust padding or grid size.")
-        return
-    total = stage.convolution.size
-    controls, preview = st.columns([1, 2])
-    with controls:
-        step = st.slider("Kernel position", 0, total - 1, key=f"{key}_step") if total > 1 else 0
-        play = st.button("Play kernel scan", key=f"{key}_play")
-        st.caption("Convolution here uses the CNN convention: cross-correlation (no kernel flip).")
-        st.dataframe(KERNELS[stage.layer.kernel], use_container_width=True)
-        row, col = divmod(step, stage.convolution.shape[1])
-        y, x = row * stage.layer.stride, col * stage.layer.stride
-        patch = stage.padded[y:y + 3, x:x + 3]
-        st.write("Pixel × weight")
-        st.dataframe(patch * KERNELS[stage.layer.kernel], use_container_width=True)
-        st.info(f"Sum = {stage.convolution[row, col]:.4g} at output ({row}, {col}).")
-    with preview:
-        frame = st.empty()
-        with frame.container():
-            draw_grid(stage.padded, "Padded input / kernel window", show_values, cell_size,
-                      rescale, (y, x, 3, 3))
-        if play:
-            positions = np.unique(np.linspace(0, total - 1, min(total, 48), dtype=int))
-            st.caption("Previewing up to 48 positions; use the slider to inspect every position.")
-            for position in positions:
-                row, col = divmod(int(position), stage.convolution.shape[1])
-                with frame.container():
-                    draw_grid(stage.padded, f"Kernel scan: output ({row}, {col})",
-                              show_values, cell_size, rescale,
-                              (row * stage.layer.stride, col * stage.layer.stride, 3, 3))
-                time.sleep(0.06)
-
-
 def playground(image: np.ndarray, show_values: bool, cell_size: int, rescale: bool):
     st.subheader("Image-processing playground")
     st.write("Try one operation at a time. Compare the output shape and pixel values with the original.")
@@ -137,12 +90,12 @@ def playground(image: np.ndarray, show_values: bool, cell_size: int, rescale: bo
         if operation == "Gaussian smoothing":
             c1.caption("Kernel: 3 × 3 Gaussian weighted-average window.")
             stride = c2.selectbox("Stride", [1, 2, 3], key="lab_stride")
+            use_padding = st.toggle("Padding", value=True, key="lab_use_padding",
+                                    help="On: SAME zero padding. Off: VALID, with no added border.")
+            padding = "same" if use_padding else "valid"
         else:
             size = c1.selectbox("Pooling window", [2, 3, 4], key="lab_pool_size")
             stride = c2.selectbox("Pooling stride", [1, 2, 3, 4], index=1, key="lab_pool_stride")
-        use_padding = st.toggle("Padding", value=True, key="lab_use_padding",
-                                help="On: SAME zero padding. Off: VALID, with no added border.")
-        padding = "same" if use_padding else "valid"
     elif operation == "Downsampling (nearest neighbor)":
         factor = st.select_slider("Downsampling factor", [2, 3, 4], value=2)
     else:
@@ -157,13 +110,10 @@ def playground(image: np.ndarray, show_values: bool, cell_size: int, rescale: bo
         if has_padding:
             st.caption(f"Zero padding: top {top}, bottom {bottom}, left {left}, right {right}. "
                        "Orange cells are added zeros; the dashed border encloses the original image.")
-            if operation in POOLING:
-                st.caption("Padded zeros participate in pooling: they can become the minimum "
-                           "and count in the average.")
         elif padding == "same":
             st.caption("Padding is on (SAME), but this window/stride needs no extra border cells.")
         else:
-            st.caption("Padding is off (VALID): only windows entirely inside the original image are used.")
+            st.caption("No padding (VALID): only windows entirely inside the original image are used.")
     st.markdown("**Kernel / window:** the neighborhood used for one output pixel. "
                 "**Stride:** how many input cells the window moves between output pixels. "
                 "**Padding:** extra border cells (zeros here), allowing windows to reach image edges.")
@@ -173,8 +123,8 @@ def playground(image: np.ndarray, show_values: bool, cell_size: int, rescale: bo
     if result.kernel is not None:
         with st.expander("Gaussian kernel weights"):
             st.dataframe(result.kernel, use_container_width=True)
-    if st.toggle("View operation", key="lab_view_operation",
-                 help="Watch the window move and construct every output pixel. Pause or restart at any time."):
+    if not st.toggle("Show only output", value=False, key="lab_show_only_output",
+                     help="Hide the operation player and show only the input and output grids."):
         st.caption("Use Play, Pause, Restart, Next pixel, or scrub the Built pixels slider. "
                    "Changing the image or operation resets playback.")
         components.html(operation_html(result, show_values, rescale), height=850, scrolling=True)
@@ -191,8 +141,10 @@ def change_network(action: str, template: str = "Edge detector"):
     layers = st.session_state.layers
     if action == "default":
         st.session_state.layers = default_network()
+        st.session_state.selected_block = st.session_state.layers[0].id
     elif action == "clear":
         st.session_state.layers = []
+        st.session_state.selected_block = None
     elif action == "add":
         templates = {
             "Edge detector": Layer(),
@@ -202,9 +154,22 @@ def change_network(action: str, template: str = "Edge detector"):
             "Custom convolution": Layer(name="Custom convolution", kernel="Identity", activation="None"),
         }
         layers.append(templates[template])
+        st.session_state.selected_block = layers[-1].id
     else:
         raise ValueError(f"Unknown network action: {action}")
-    st.session_state.board_revision += 1
+
+
+def select_layer(layer_id: str):
+    st.session_state.selected_block = layer_id
+
+
+def move_layer(layer_id: str, offset: int):
+    layers = st.session_state.layers
+    index = next(index for index, layer in enumerate(layers) if layer.id == layer_id)
+    destination = index + offset
+    if 0 <= destination < len(layers):
+        layers.insert(destination, layers.pop(index))
+    st.session_state.selected_block = layer_id
 
 
 def edit_layer(layer: Layer):
@@ -241,6 +206,10 @@ def network_builder(image: np.ndarray, show_values: bool, cell_size: int, rescal
     c1.button("Restore 10-layer example", on_click=change_network, args=("default",),
               use_container_width=True)
     c2.button("Start empty", on_click=change_network, args=("clear",), use_container_width=True)
+    layers = st.session_state.layers
+    ids = [layer.id for layer in layers]
+    if st.session_state.get("selected_block") not in ids:
+        st.session_state.selected_block = ids[0] if ids else None
     board, editor = st.columns([1, 2])
     with board:
         st.markdown("#### Block palette")
@@ -251,44 +220,40 @@ def network_builder(image: np.ndarray, show_values: bool, cell_size: int, rescal
         st.button("＋ Add block", on_click=change_network, args=("add", template),
                   use_container_width=True)
         st.markdown("#### Network · top to bottom")
-        st.caption("Add blocks from the palette, then drag them into order. Changes run immediately.")
-        layers = st.session_state.layers
-        labels = {
-            f"{index + 1:02d} · {layer.name or 'Untitled'}": layer
-            for index, layer in enumerate(layers)
-        }
+        st.caption("Click a block to edit it. Use the arrows to reorder. Changes run immediately.")
         if layers:
-            ordered = sort_items(list(labels), direction="vertical", custom_style=BLOCK_STYLE,
-                                 key=f"board_{st.session_state.board_revision}")
-            reordered = [labels[label] for label in ordered]
-            if [layer.id for layer in reordered] != [layer.id for layer in layers]:
-                st.session_state.layers = reordered
-                st.session_state.board_revision += 1
-                st.rerun()
+            for index, layer in enumerate(layers):
+                block, up, down = st.columns([6, 1, 1])
+                block.button(
+                    f"{index + 1:02d} · {layer.name or 'Untitled'}",
+                    key=f"select_{layer.id}", on_click=select_layer, args=(layer.id,),
+                    type="primary" if layer.id == st.session_state.selected_block else "secondary",
+                    use_container_width=True,
+                )
+                up.button("↑", key=f"up_{layer.id}", on_click=move_layer, args=(layer.id, -1),
+                          disabled=index == 0, help="Move block up")
+                down.button("↓", key=f"down_{layer.id}", on_click=move_layer, args=(layer.id, 1),
+                            disabled=index == len(layers) - 1, help="Move block down")
         else:
             st.info("Your network is empty. Add a block to begin.")
     with editor:
         if layers:
-            ids = [layer.id for layer in layers]
-            selected = st.selectbox(
-                "Configure block", ids, key="selected_block",
-                format_func=lambda uid: f"{ids.index(uid) + 1}. {next(x.name for x in layers if x.id == uid)}",
-            )
-            layer = next(layer for layer in layers if layer.id == selected)
+            layer = next(layer for layer in layers if layer.id == st.session_state.selected_block)
+            st.markdown(f"#### Configure block {layers.index(layer) + 1}")
             previous_name = layer.name
             edit_layer(layer)
             if layer.name != previous_name:
-                st.session_state.board_revision += 1
                 st.rerun()
             duplicate, remove = st.columns(2)
             if duplicate.button("Duplicate block"):
                 copy = replace(layer, id=Layer().id, name=f"{layer.name} copy")
                 layers.insert(layers.index(layer) + 1, copy)
-                st.session_state.board_revision += 1
+                st.session_state.selected_block = copy.id
                 st.rerun()
             if remove.button("Remove block"):
+                index = layers.index(layer)
                 layers.remove(layer)
-                st.session_state.board_revision += 1
+                st.session_state.selected_block = layers[min(index, len(layers) - 1)].id if layers else None
                 st.rerun()
             st.caption("SAME uses zero padding. Pooling uses no padding. "
                        "Pixel-based preprocessing (e.g. invert at 255) also acts on raw feature values.")
@@ -313,27 +278,40 @@ def network_builder(image: np.ndarray, show_values: bool, cell_size: int, rescal
         st.error(f"Stopped at block {len(stages)} ({stages[-1].layer.name}): the grid became empty. "
                  "Use SAME padding, a smaller pooling window/stride, or a larger input grid. "
                  "Later blocks have not run.")
-    c1, c2 = st.columns(2)
-    with c1:
-        draw_grid(image, "Network input · 8-bit grayscale", show_values, cell_size)
-    with c2:
-        draw_grid(output, f"Network output · {len(stages)} blocks applied",
-                  show_values, cell_size, rescale)
-    if stages:
-        selected_stage = st.selectbox(
-            "Inspect intermediate layer", range(len(stages)),
-            format_func=lambda index: f"{index + 1}. {stages[index].layer.name}",
+    show_only_output = st.toggle(
+        "Show only output", key="network_show_only_output",
+        help="Replace network playback with static input and final output grids.",
+    )
+    if stages and not show_only_output:
+        st.caption("Play the entire network or one layer. Each completed output becomes the next "
+                   "operation's input. Click a layer in the player to restart there.")
+        components.html(
+            network_html(stages, show_values, rescale, st.session_state.selected_block),
+            height=1050, scrolling=True,
         )
-        stage = stages[selected_stage]
-        views = {
-            "Input": stage.incoming, "Preprocessing": stage.preprocessed,
-            "Convolution": stage.convolution, "Activation": stage.activated, "Pooling / output": stage.output,
-        }
-        selected_view = st.radio("Processing step", list(views), index=4, horizontal=True)
-        draw_grid(views[selected_view], selected_view, show_values, cell_size,
-                  rescale and not (selected_stage == 0 and selected_view == "Input"))
-        with st.expander("Inspect / animate this convolution"):
-            inspect_kernel(stage, show_values, cell_size, rescale, f"network_{stage.layer.id}")
+    else:
+        c1, c2 = st.columns(2)
+        with c1:
+            draw_grid(image, "Network input · 8-bit grayscale", show_values, cell_size)
+        with c2:
+            draw_grid(output, f"Network output · {len(stages)} blocks applied",
+                      show_values, cell_size, rescale)
+    if stages:
+        stage = next((stage for stage in stages if stage.layer.id == st.session_state.selected_block), None)
+        if stage is None:
+            st.info("This block was not reached because an earlier block produced an empty grid.")
+        else:
+            with st.expander("Selected block · static processing steps and kernel"):
+                views = {
+                    "Input": stage.incoming, "Preprocessing": stage.preprocessed,
+                    "Convolution": stage.convolution, "Activation": stage.activated,
+                    "Pooling / output": stage.output,
+                }
+                selected_view = st.radio("Processing step", list(views), index=4, horizontal=True)
+                draw_grid(views[selected_view], selected_view, show_values, cell_size,
+                          rescale and not (stage is stages[0] and selected_view == "Input"))
+                st.caption("CNN convolution uses cross-correlation: the kernel is not flipped.")
+                st.dataframe(KERNELS[stage.layer.kernel], use_container_width=True)
     st.download_button(
         "Download lesson configuration",
         data=json.dumps({
@@ -350,7 +328,6 @@ def main():
     st.caption("Generate pixels. Explore filters. Build a feature extractor.")
     if "layers" not in st.session_state:
         st.session_state.layers = default_network()
-        st.session_state.board_revision = 0
     with st.sidebar:
         st.header("Image generator")
         grid_size = st.slider("Image grid size", 8, 64, 16, step=8,
