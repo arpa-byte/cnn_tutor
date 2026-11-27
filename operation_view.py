@@ -6,8 +6,16 @@ import json
 from image_processing import KERNELS, OperationResult, Stage, pad_window
 
 
-def operation_html(result: OperationResult, show_values: bool, rescale: bool) -> str:
-    return player_html([operation_data(result)], [], 0, show_values, rescale)
+HEATMAP_COLORS = ((59, 76, 192), (245, 245, 245), (180, 4, 38))
+
+
+def operation_html(
+    result: OperationResult, show_values: bool, rescale: bool, run_id: int | None = None,
+) -> str:
+    frame = operation_data(result)
+    if run_id is not None:
+        frame["runId"] = run_id
+    return player_html([frame], [], 0, show_values, rescale)
 
 
 def operation_data(result: OperationResult) -> dict:
@@ -19,6 +27,9 @@ def operation_data(result: OperationResult) -> dict:
         "size": result.window_size,
         "stride": result.stride,
         "kernel": result.kernel.tolist() if result.kernel is not None else None,
+        "divisor": result.divisor,
+        "heatmap": result.heatmap,
+        "bipolarInput": result.bipolar_input,
     }
 
 
@@ -77,6 +88,7 @@ def player_html(
     data = json.dumps({
         "frames": frames, "layers": layers, "selectedLayer": selected,
         "showValues": show_values, "rescale": rescale,
+        "heatmapColors": HEATMAP_COLORS,
     }, allow_nan=False).replace("<", "\\u003c")
     return PLAYER_HTML.replace("__OPERATION_DATA__", data)
 
@@ -102,6 +114,12 @@ button:focus-visible, input:focus-visible { outline: 3px solid #1877d2; }
 #handoff { min-height: 24px; }
 #error { color: #a32323; font-weight: 600; }
 .grids { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+.grids.with-filter { grid-template-columns: minmax(0, 1fr) 120px minmax(0, 1fr); }
+#filter-panel[hidden], #heatmap-legend[hidden] { display: none; }
+#filter-matrix { width: 100%; border-collapse: collapse; background: white; }
+#filter-matrix td { border: 1px solid #7891a9; padding: 8px 2px; text-align: center; }
+#heatmap-bar { height: 14px; border-radius: 3px; }
+#heatmap-labels { display: flex; justify-content: space-between; }
 canvas { width: 100%; aspect-ratio: 1; display: block; }
 h3 { font-size: 16px; margin: 14px 0 8px; }
 p { line-height: 1.5; margin: 10px 0; }
@@ -110,6 +128,8 @@ p { line-height: 1.5; margin: 10px 0; }
 #calculation { white-space: pre-wrap; overflow-wrap: anywhere; min-height: 48px; }
 .hint { color: #48627c; font-size: 13px; }
 @media (max-width: 600px) { .grids { gap: 8px; } body { padding: 8px; } }
+@media (max-width: 600px) { .grids.with-filter { grid-template-columns: minmax(0, 1fr) 76px minmax(0, 1fr); }
+  #filter-matrix td { padding: 5px 1px; font-size: 11px; } }
 </style></head>
 <body>
 <div id="network-controls" hidden>
@@ -136,9 +156,12 @@ p { line-height: 1.5; margin: 10px 0; }
   <label for="position">Built pixels</label><input id="position" type="range" min="0" value="0">
   <span id="progress" role="status" aria-live="off"></span>
 </div>
-<div class="grids">
+<div class="grids" id="grids">
   <div><h3>Input / moving window <span id="input-shape"></span></h3><canvas id="input" aria-label="Input with active operation window"></canvas></div>
-  <div><h3>Output / built one pixel at a time <span id="output-shape"></span></h3><canvas id="output" aria-label="Partially constructed output"></canvas></div>
+  <div id="filter-panel" hidden><h3>Filter parameters</h3><table id="filter-matrix" aria-label="Applied filter weights"></table><p id="filter-scale" class="hint"></p></div>
+  <div><h3><span id="output-title">Output / built one pixel at a time</span> <span id="output-shape"></span></h3><canvas id="output" aria-label="Partially constructed output"></canvas>
+    <div id="heatmap-legend" hidden><div id="heatmap-bar"></div><div id="heatmap-labels"><span id="heatmap-low"></span><span>0</span><span id="heatmap-high"></span></div></div>
+  </div>
 </div>
 <p class="hint">Orange cells = added zero padding; red outline = active window / output pixel.
 Blank output cells have not been computed yet. Scan order: left to right, then top to bottom.</p>
@@ -152,7 +175,7 @@ const lesson = __OPERATION_DATA__;
 const $ = id => document.getElementById(id);
 const frames = lesson.frames;
 let frameIndex = 0, endIndex = frames.length - 1, selectedLayer = lesson.selectedLayer;
-let data, rows, cols, total, inMin, inMax, outMin, outMax;
+let data, rows, cols, total, inMin, inMax, outMin, outMax, heatLimit;
 let completed = 0, running = false, timer = null, handoff = "";
 const layerButtons = [];
 const fmt = value => Number.isInteger(value) ? String(value) : Number(value.toPrecision(7)).toString();
@@ -163,6 +186,7 @@ function loadFrame(index) {
   const flatInput = data.input.flat(), flatOutput = data.output.flat();
   inMin = Math.min(...flatInput); inMax = Math.max(...flatInput);
   outMin = Math.min(...flatOutput); outMax = Math.max(...flatOutput);
+  heatLimit = Math.max(Math.abs(outMin), Math.abs(outMax), 1);
   $("position").max = total;
   $("input-shape").textContent = `(${data.input.length} × ${data.input[0]?.length || 0})`;
   $("output-shape").textContent = `(${rows} × ${cols})`;
@@ -170,9 +194,29 @@ function loadFrame(index) {
     ? `Layer ${data.layer + 1}: ${lesson.layers[data.layer].name} · ${data.step} · ${data.operation}`
     : data.operation;
   $("error").textContent = data.error || "";
-  $("display-mode").textContent = lesson.rescale
+  $("display-mode").textContent = data.heatmap
+    ? "Heatmap: blue = negative response, white = zero, red = positive response. Colors use a symmetric scale; calculations and numeric values are unchanged."
+    : lesson.rescale
     ? `${lesson.layers.length ? "Both grids use their own" : "Output brightness uses its"} full range for display contrast; numeric values and calculations are unchanged.`
     : "Brightness uses 0–255 (clipped); numeric values and calculations are unchanged.";
+  $("grids").classList.toggle("with-filter", data.heatmap);
+  $("filter-panel").hidden = !data.heatmap;
+  $("heatmap-legend").hidden = !data.heatmap;
+  $("output-title").textContent = data.heatmap ? "Output heatmap" : "Output / built one pixel at a time";
+  $("filter-matrix").replaceChildren();
+  if (data.heatmap) {
+    data.kernel.forEach(weights => {
+      const row = document.createElement("tr");
+      weights.forEach(weight => {
+        const cell = document.createElement("td"); cell.textContent = fmt(weight); row.appendChild(cell);
+      });
+      $("filter-matrix").appendChild(row);
+    });
+    $("filter-scale").textContent = data.divisor === 1 ? "Sum of 9 products" : `Sum of 9 products ÷ ${fmt(data.divisor)}`;
+    const colors = lesson.heatmapColors.map(color => `rgb(${color.join(",")})`);
+    $("heatmap-bar").style.background = `linear-gradient(to right, ${colors.join(",")})`;
+    $("heatmap-low").textContent = fmt(-heatLimit); $("heatmap-high").textContent = fmt(heatLimit);
+  }
   layerButtons.forEach((button, index) => {
     button.setAttribute("aria-current", index === data.layer ? "step" : "false");
     button.setAttribute("aria-pressed", String(index === selectedLayer));
@@ -196,11 +240,19 @@ function canvasGrid(id, matrix, count, input) {
     for (let c = 0; c < ncols; c++) {
       const known = input || r * ncols + c < count, value = matrix[r][c];
       let shade = value;
+      if (input && data.bipolarInput) shade = (value + 1) * 127.5;
       const low = input ? inMin : outMin, high = input ? inMax : outMax;
-      if (lesson.rescale && high > low && (!input || lesson.layers.length))
+      if (!data.bipolarInput && lesson.rescale && high > low && (!input || lesson.layers.length))
         shade = (value - low) / (high - low) * 255;
       shade = Math.max(0, Math.min(255, shade));
-      ctx.fillStyle = known ? `rgb(${shade},${shade},${shade})` : "#e4eaf1";
+      let color = [shade, shade, shade];
+      if (!input && data.heatmap) {
+        const fraction = Math.min(1, Math.abs(value) / heatLimit);
+        const neutral = lesson.heatmapColors[1], end = lesson.heatmapColors[value < 0 ? 0 : 2];
+        color = neutral.map((channel, i) => Math.round(channel + (end[i] - channel) * fraction));
+        shade = color[0] * .2126 + color[1] * .7152 + color[2] * .0722;
+      }
+      ctx.fillStyle = known ? `rgb(${color.join(",")})` : "#e4eaf1";
       ctx.fillRect(c * cell, r * cell, cell, cell);
       if (input && (r < top || r >= top + height || c < left || c >= left + width)) {
         ctx.fillStyle = "rgba(255,166,45,.55)";
@@ -255,6 +307,7 @@ function draw() {
   let formula;
   if (data.kernel) {
     formula = patch.map((value, i) => `${fmt(value)} × ${fmt(data.kernel.flat()[i])}`).join(" + ");
+    if (data.divisor !== 1) formula = `(${formula}) / ${fmt(data.divisor)}`;
   } else if (data.operation === "Normalize 0–1") {
     formula = inMax === inMin ? "Constant input → 0" : `(${fmt(patch[0])} − ${fmt(inMin)}) / (${fmt(inMax)} − ${fmt(inMin)})`;
   } else if (data.operation.startsWith("Invert")) {

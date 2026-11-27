@@ -5,21 +5,23 @@ import json
 from dataclasses import asdict, replace
 
 import matplotlib.pyplot as plt
+from matplotlib.colors import LinearSegmentedColormap
 import numpy as np
 import streamlit as st
 import streamlit.components.v1 as components
 
 from image_processing import (
-    ACTIVATIONS, KERNELS, PLAYGROUND_OPERATIONS, POOLING, PREPROCESSING, Layer,
-    apply_operation, default_network, make_samples, run_network,
+    ACTIVATIONS, KERNELS, PATTERN_FILTER, PLAYGROUND_OPERATIONS, POOLING, PREPROCESSING, Layer,
+    apply_operation, default_network, make_samples, pattern_input, run_network,
 )
-from operation_view import network_html, operation_html
+from operation_view import HEATMAP_COLORS, network_html, operation_html
 
 
 def draw_grid(
     a: np.ndarray, title: str, show_values: bool, cell_size: int,
     rescale: bool = False, overlay: tuple[int, int, int, int] | None = None,
     original_bounds: tuple[int, int, int, int] | None = None,
+    heatmap: bool = False, bipolar: bool = False,
 ):
     st.markdown(f"**{title}**")
     if a.size == 0:
@@ -27,7 +29,16 @@ def draw_grid(
         return
     lo, hi = float(a.min()), float(a.max())
     shown = a.astype(float)
-    if rescale and hi > lo:
+    heat_limit = max(abs(lo), abs(hi), 1)
+    if heatmap:
+        palette = LinearSegmentedColormap.from_list(
+            "pattern_response", np.array(HEATMAP_COLORS) / 255,
+        )
+        colors = palette((a + heat_limit) / (2 * heat_limit))
+        shown = (colors[..., :3] @ np.array([.2126, .7152, .0722])) * 255
+    elif bipolar:
+        shown = (shown + 1) * 127.5
+    elif rescale and hi > lo:
         shown = (shown - lo) / (hi - lo) * 255
     elif rescale:
         # Constant maps must not disappear as black after rescaling.
@@ -38,7 +49,11 @@ def draw_grid(
         max(3, min(10, cols * cell_size / 100)),
         max(3, min(10, rows * cell_size / 100)),
     ))
-    ax.imshow(shown, cmap="gray", vmin=0, vmax=255, interpolation="nearest")
+    if heatmap:
+        plot = ax.imshow(a, cmap=palette, vmin=-heat_limit, vmax=heat_limit, interpolation="nearest")
+        fig.colorbar(plot, ax=ax, shrink=.8, label="Pattern response")
+    else:
+        ax.imshow(shown, cmap="gray", vmin=0, vmax=255, interpolation="nearest")
     if original_bounds is not None:
         top, left, height, width = original_bounds
         tint = np.zeros((*a.shape, 4))
@@ -72,10 +87,76 @@ def draw_grid(
         st.caption("Large grid: values are in the table below to keep the image readable.")
         with st.expander(f"{title} · numeric pixel table"):
             st.dataframe(a, use_container_width=True)
-    if rescale and hi > lo:
+    if heatmap:
+        st.caption("Blue = negative response · white = zero · red = positive response. "
+                   "Colors do not change the numeric results.")
+    elif bipolar:
+        st.caption("Binary pattern: −1 = black, +1 = white.")
+    elif rescale and hi > lo:
         st.caption("Display rescaled to 0–255; calculations and printed values are unchanged.")
     elif lo < 0 or hi > 255:
         st.caption("Display clipped to 0–255; calculations and printed values are unchanged.")
+
+
+def randomize_pattern_filter():
+    weights = np.random.default_rng().integers(-1, 2, (3, 3))
+    for row, col in np.ndindex(3, 3):
+        st.session_state[f"pattern_weight_{row}_{col}"] = float(weights[row, col])
+
+
+def pattern_controls(image: np.ndarray) -> tuple[np.ndarray, np.ndarray, int, str, bool]:
+    if "pattern_run" not in st.session_state:
+        st.session_state.pattern_run = {
+            "kernel": PATTERN_FILTER.copy(), "stride": 1, "padding": "valid",
+            "average": True, "input": "Slide-style X (9 × 9)",
+        }
+    settings = st.session_state.pattern_run
+    st.markdown("#### Convolution for image pattern recognition")
+    st.caption("Inspired by slide 88: a −1/+1 input, a 3 × 3 filter, and a response heatmap. "
+               "Edit or randomize the weights, then click Run convolution to apply them.")
+    st.button("Randomize 3 × 3 filter", on_click=randomize_pattern_filter,
+              key="pattern_randomize",
+              help="Fill the editor with random −1, 0, or +1 weights. Click Run convolution to apply.")
+    with st.form("pattern_filter_form"):
+        input_choice = st.selectbox(
+            "Pattern input", ["Slide-style X (9 × 9)", "Sidebar image (threshold at 128)"],
+            index=0 if settings["input"] == "Slide-style X (9 × 9)" else 1,
+        )
+        st.markdown("**Filter parameters · 3 × 3**")
+        weights = np.empty((3, 3))
+        for row in range(3):
+            cells = st.columns(3)
+            for col, cell in enumerate(cells):
+                key = f"pattern_weight_{row}_{col}"
+                if key not in st.session_state:
+                    st.session_state[key] = float(settings["kernel"][row, col])
+                weights[row, col] = cell.number_input(
+                    f"Weight ({row + 1}, {col + 1})", step=.25, format="%.2f", key=key,
+                )
+        c1, c2 = st.columns(2)
+        stride = c1.selectbox("Stride", [1, 2, 3], index=settings["stride"] - 1,
+                             key="pattern_stride")
+        padded = c2.toggle("Padding", value=settings["padding"] == "same", key="pattern_padding",
+                           help="On: SAME zero padding. Off: VALID, as in the slide example.")
+        average = st.checkbox(
+            "Average the 9 products", value=settings["average"], key="pattern_average",
+            help="Divide the dot product by 9. Uncheck to see the raw convolution sum.",
+        )
+        if st.form_submit_button("Run convolution"):
+            if not np.isfinite(weights).all():
+                st.error("Filter weights must be finite numbers. The previous result is unchanged.")
+            else:
+                st.session_state.pattern_run = {
+                    "kernel": weights, "stride": stride, "padding": "same" if padded else "valid",
+                    "average": average, "input": input_choice,
+                }
+                st.session_state.pattern_revision = st.session_state.get("pattern_revision", 0) + 1
+    settings = st.session_state.pattern_run
+    source = pattern_input(None if settings["input"] == "Slide-style X (9 × 9)" else image)
+    st.caption("Heatmap values use the last applied filter. With −1/+1 pixels and weights, "
+               "averaging gives +1 for a perfect match and −1 for the opposite pattern. "
+               "Other weights can produce values outside this range. The kernel is not flipped.")
+    return source, settings["kernel"], settings["stride"], settings["padding"], settings["average"]
 
 
 def playground(image: np.ndarray, show_values: bool, cell_size: int, rescale: bool):
@@ -84,8 +165,11 @@ def playground(image: np.ndarray, show_values: bool, cell_size: int, rescale: bo
     operation = st.selectbox("Operation", list(PLAYGROUND_OPERATIONS))
     st.info(PLAYGROUND_OPERATIONS[operation])
     size, stride, factor, padding = 2, 1, 2, "valid"
-    windowed = operation == "Gaussian smoothing" or operation in POOLING
-    if windowed:
+    kernel, average = None, True
+    windowed = operation in ("Gaussian smoothing", "Convolution for pattern recognition") or operation in POOLING
+    if operation == "Convolution for pattern recognition":
+        image, kernel, stride, padding, average = pattern_controls(image)
+    elif windowed:
         c1, c2 = st.columns(2)
         if operation == "Gaussian smoothing":
             c1.caption("Kernel: 3 × 3 Gaussian weighted-average window.")
@@ -101,7 +185,8 @@ def playground(image: np.ndarray, show_values: bool, cell_size: int, rescale: bo
     else:
         st.caption("This is a per-pixel operation: a 1 × 1 cursor replaces the moving kernel. "
                    "Padding is not needed.")
-    result = apply_operation(image, operation, size=size, stride=stride, padding=padding, factor=factor)
+    result = apply_operation(image, operation, size=size, stride=stride, padding=padding, factor=factor,
+                             kernel=kernel, average_products=average)
     top, left, height, width = result.original_bounds
     bottom = result.incoming.shape[0] - top - height
     right = result.incoming.shape[1] - left - width
@@ -121,20 +206,31 @@ def playground(image: np.ndarray, show_values: bool, cell_size: int, rescale: bo
         for name, definition in PLAYGROUND_OPERATIONS.items():
             st.markdown(f"**{name}:** {definition}")
     if result.kernel is not None:
-        with st.expander("Gaussian kernel weights"):
+        with st.expander("Applied filter weights" if result.heatmap else "Gaussian kernel weights"):
             st.dataframe(result.kernel, use_container_width=True)
     if not st.toggle("Show only output", value=False, key="lab_show_only_output",
                      help="Hide the operation player and show only the input and output grids."):
         st.caption("Use Play, Pause, Restart, Next pixel, or scrub the Built pixels slider. "
                    "Changing the image or operation resets playback.")
-        components.html(operation_html(result, show_values, rescale), height=850, scrolling=True)
+        run_id = st.session_state.get("pattern_revision", 0) if result.heatmap else None
+        components.html(operation_html(result, show_values, rescale, run_id), height=850, scrolling=True)
     else:
-        before, after = st.columns(2)
+        if result.heatmap:
+            before, filter_column, after = st.columns([1, .45, 1])
+            with filter_column:
+                st.markdown("**Applied filter**")
+                st.dataframe(result.kernel, use_container_width=True)
+                st.caption(f"Sum of products ÷ {result.divisor:g}")
+        else:
+            before, after = st.columns(2)
         with before:
-            draw_grid(result.incoming, "Input · padded matrix" if has_padding else "Input · 8-bit grayscale",
-                      show_values, cell_size, original_bounds=result.original_bounds if has_padding else None)
+            title = "Input · −1/+1 pattern" if result.bipolar_input else "Input · 8-bit grayscale"
+            draw_grid(result.incoming, f"{title} · padded" if has_padding else title,
+                      show_values, cell_size, original_bounds=result.original_bounds if has_padding else None,
+                      bipolar=result.bipolar_input)
         with after:
-            draw_grid(result.output, operation, show_values, cell_size, rescale)
+            draw_grid(result.output, "Output heatmap" if result.heatmap else operation,
+                      show_values, cell_size, rescale, heatmap=result.heatmap)
 
 
 def change_network(action: str, template: str = "Edge detector"):

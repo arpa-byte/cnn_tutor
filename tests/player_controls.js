@@ -12,13 +12,15 @@ function element(id) {
   return {
     id, textContent: "", disabled: false, checked: id === "whole-network",
     hidden: true, value: id === "speed" ? "4" : "0", children: [], attributes: {},
+    style: {}, classList: {toggle() {}},
     setAttribute(name, value) { this.attributes[name] = value; },
     appendChild(child) { this.children.push(child); },
+    replaceChildren() { this.children = []; },
     getBoundingClientRect() { return {width: 320}; },
     getContext() {
       this.context = {
         fills: [], scale() {},
-        fillRect(...args) { this.fills.push(args); },
+        fillRect(...args) { this.fills.push({args, color: this.fillStyle}); },
         strokeRect() {}, fillText() {},
       };
       return this.context;
@@ -137,6 +139,21 @@ if (process.argv[2] === "network") {
   click("restart");
   assert.equal(state("frameIndex"), 0);
   assert.equal($("play").disabled, false);
+} else if (process.argv[2] === "heatmap") {
+  assert.equal($("filter-panel").hidden, false);
+  assert.equal($("heatmap-legend").hidden, false);
+  assert.equal($("filter-matrix").children.length, 3);
+  assert.match($("calculation").textContent, /\/ 9/);
+  finish();
+  const colors = $("output").context.fills.map(fill => fill.color);
+  assert.ok(colors.includes("rgb(59,76,192)"), "Negative response must be blue");
+  assert.ok(colors.includes("rgb(245,245,245)"), "Zero response must be white");
+  assert.ok(colors.includes("rgb(180,4,38)"), "Positive response must be red");
+  const inputColors = $("input").context.fills.map(fill => fill.color);
+  assert.ok(inputColors.includes("rgb(0,0,0)"), "−1 input must be black");
+  assert.ok(inputColors.includes("rgb(255,255,255)"), "+1 input must be white");
+  click("restart");
+  assert.equal(state("completed"), 0);
 } else {
   assert.equal($("network-controls").hidden, true);
   finish();

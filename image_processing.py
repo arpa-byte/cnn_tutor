@@ -33,7 +33,12 @@ PLAYGROUND_OPERATIONS = {
     "Normalize 0–1": "Rescale using (pixel − image minimum) / (image maximum − image minimum). "
                      "A constant image becomes zero. Outputs are floating-point values from 0 to 1.",
     "Invert (255 − pixel)": "Replace every pixel with 255 − pixel, swapping light and dark.",
+    "Convolution for pattern recognition": "Slide an editable 3 × 3 filter over a −1/+1 pattern. "
+                                         "Multiply each pixel by its filter weight and sum the products. "
+                                         "Optionally divide by 9, as in the slide example. With −1/+1 "
+                                         "weights, +1 is a perfect match and −1 is the opposite pattern.",
 }
+PATTERN_FILTER = np.where(np.eye(3, dtype=bool), 1.0, -1.0)
 
 
 @dataclass
@@ -70,6 +75,19 @@ class OperationResult:
     window_size: int
     stride: int
     kernel: np.ndarray | None = None
+    divisor: float = 1.0
+    heatmap: bool = False
+    bipolar_input: bool = False
+
+
+def pattern_input(image: np.ndarray | None = None) -> np.ndarray:
+    if image is not None:
+        return np.where(image >= 128, 1.0, -1.0)
+    sample = np.full((9, 9), -1.0)
+    diagonal = np.arange(1, 8)
+    sample[diagonal, diagonal] = 1
+    sample[diagonal, 8 - diagonal] = 1
+    return sample
 
 
 def pad_window(
@@ -164,21 +182,33 @@ def pool(a: np.ndarray, kind: str, size: int, stride: int, padding: str = "valid
 def apply_operation(
     image: np.ndarray, operation: str, *, size: int = 2,
     stride: int = 1, padding: str = "valid", factor: int = 2,
+    kernel: np.ndarray | None = None, average_products: bool = True,
 ) -> OperationResult:
     """Keep the displayed windows and their computed outputs on the same coordinates."""
     if operation not in PLAYGROUND_OPERATIONS:
         raise ValueError(f"Unknown playground operation: {operation}")
     source = image.astype(float)
-    kernel = None
-    if operation == "Gaussian smoothing":
-        kernel = KERNELS["Gaussian blur"]
+    heatmap = operation == "Convolution for pattern recognition"
+    divisor = 9.0 if heatmap and average_products else 1.0
+    if heatmap or operation == "Gaussian smoothing":
+        if heatmap:
+            if kernel is None:
+                raise ValueError("Pattern recognition needs a 3 × 3 filter.")
+            kernel = np.asarray(kernel, dtype=float)
+            if kernel.shape != (3, 3) or not np.isfinite(kernel).all():
+                raise ValueError("Pattern recognition needs nine finite filter weights.")
+        else:
+            kernel = KERNELS["Gaussian blur"]
         size = 3
         output, work = convolve(source, kernel, padding, stride)
+        output = output / divisor
         _, bounds = pad_window(source, (size, size), stride, padding)
     elif operation in POOLING:
+        kernel = None
         output = pool(source, operation, size, stride, padding)
         work, bounds = pad_window(source, (size, size), stride, padding)
     else:
+        kernel = None
         work = source
         bounds = (0, 0, *source.shape)
         size = 1
@@ -190,7 +220,8 @@ def apply_operation(
             output = source[::factor, ::factor]
         else:
             output = preprocess(source, operation)
-    return OperationResult(operation, work, output, bounds, size, stride, kernel)
+    return OperationResult(operation, work, output, bounds, size, stride, kernel,
+                           divisor, heatmap, heatmap)
 
 
 def default_network() -> list[Layer]:

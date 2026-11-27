@@ -87,6 +87,15 @@ class NetworkPlaybackTests(unittest.TestCase):
         result = apply_operation(self.image, "Gaussian smoothing", padding="same")
         self.run_controls(operation_html(result, True, False), "playground")
 
+    def test_heatmap_colors_filter_display_and_playback(self):
+        image = np.array([[-1, 1, -1, 1, -1], [0, -1, 0, 1, 0], [-1, 1, -1, 1, -1]], float)
+        kernel = np.zeros((3, 3))
+        kernel[1, 1] = 9
+        result = apply_operation(
+            image, "Convolution for pattern recognition", kernel=kernel,
+        )
+        self.run_controls(operation_html(result, True, True), "heatmap")
+
 
 if __name__ == "__main__":
     unittest.main()
