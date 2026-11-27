@@ -16,6 +16,10 @@ KERNELS = {
     "Emboss": np.array([[-2, -1, 0], [-1, 1, 1], [0, 1, 2]], float),
     "Identity": np.array([[0, 0, 0], [0, 1, 0], [0, 0, 0]], float),
 }
+EDGE_FILTERS = {
+    "Edge detection": np.array([[-1, -1, -1], [-1, 8, -1], [-1, -1, -1]], float),
+    "Vertical edge detection": KERNELS["Edge detect (vertical)"],
+}
 PREPROCESSING = [
     "None", "Normalize 0–1", "Invert (255 − pixel)",
     "Threshold at 128", "Contrast × 1.6",
@@ -37,6 +41,12 @@ PLAYGROUND_OPERATIONS = {
                                          "Multiply each pixel by its filter weight and sum the products. "
                                          "Optionally divide by 9, as in the slide example. With −1/+1 "
                                          "weights, +1 is a perfect match and −1 is the opposite pattern.",
+    "Edge detection": "Find intensity changes in all directions with an editable 3 × 3 Laplacian "
+                      "filter. Uniform regions give zero; positive and negative responses mark "
+                      "the two sides of an edge.",
+    "Vertical edge detection": "Find vertical boundaries with an editable 3 × 3 Sobel filter. "
+                               "It compares pixels on the right with pixels on the left. "
+                               "The response sign shows the direction of the brightness change.",
 }
 PATTERN_FILTER = np.where(np.eye(3, dtype=bool), 1.0, -1.0)
 
@@ -78,6 +88,71 @@ class OperationResult:
     divisor: float = 1.0
     heatmap: bool = False
     bipolar_input: bool = False
+
+
+@dataclass(frozen=True)
+class ArchitectureLayer:
+    """One operation in the feature-map size exercise."""
+    operation: str
+    kernel_size: int
+    stride: int
+    padding: str
+    output_channels: int | None = None
+
+
+def output_resolution(
+    height: int, width: int, channels: int, layer: ArchitectureLayer,
+) -> tuple[int, int, int]:
+    """Return the H × W × C result of a convolution or pooling operation."""
+    if min(height, width, channels, layer.kernel_size, layer.stride) < 1:
+        raise ValueError("Feature-map dimensions, kernel size, and stride must be positive.")
+    if layer.padding == "SAME":
+        output_height = (height + layer.stride - 1) // layer.stride
+        output_width = (width + layer.stride - 1) // layer.stride
+    elif layer.padding == "VALID":
+        output_height = (height - layer.kernel_size) // layer.stride + 1
+        output_width = (width - layer.kernel_size) // layer.stride + 1
+    else:
+        raise ValueError("Padding must be SAME or VALID.")
+    if min(output_height, output_width) < 1:
+        raise ValueError("This layer's kernel does not fit its input feature map.")
+    if layer.operation == "Convolution":
+        if layer.output_channels is None or layer.output_channels < 1:
+            raise ValueError("A convolution needs a positive number of output filters.")
+        output_channels = layer.output_channels
+    elif layer.operation == "Max pooling":
+        output_channels = channels
+    else:
+        raise ValueError("Operation must be Convolution or Max pooling.")
+    return output_height, output_width, output_channels
+
+
+def random_architecture(
+    seed: int | None = None,
+) -> tuple[tuple[int, int, int], list[ArchitectureLayer]]:
+    """Create a solvable CNN-size exercise with convolution and pooling layers."""
+    random = np.random.default_rng(seed)
+    input_shape = (
+        int(random.choice([24, 28, 32, 36, 40, 48])),
+        int(random.choice([24, 28, 32, 36, 40, 48])),
+        int(random.choice([1, 3])),
+    )
+    current = input_shape
+    layers: list[ArchitectureLayer] = []
+    for index in range(int(random.integers(4, 7))):
+        operation = "Convolution" if index == 0 or random.random() < .65 else "Max pooling"
+        kernel_size = int(random.choice([2, 3, 3, 5]))
+        stride = int(random.choice([1, 1, 2]))
+        padding = str(random.choice(["SAME", "VALID"]))
+        output_channels = int(random.choice([4, 8, 16, 32])) if operation == "Convolution" else None
+        candidate = ArchitectureLayer(operation, kernel_size, stride, padding, output_channels)
+        try:
+            current = output_resolution(*current, candidate)
+        except ValueError:
+            candidate = ArchitectureLayer(operation, 2, 1, "SAME", output_channels)
+            current = output_resolution(*current, candidate)
+        layers.append(candidate)
+    return input_shape, layers
 
 
 def pattern_input(image: np.ndarray | None = None) -> np.ndarray:
@@ -188,15 +263,18 @@ def apply_operation(
     if operation not in PLAYGROUND_OPERATIONS:
         raise ValueError(f"Unknown playground operation: {operation}")
     source = image.astype(float)
-    heatmap = operation == "Convolution for pattern recognition"
-    divisor = 9.0 if heatmap and average_products else 1.0
+    pattern = operation == "Convolution for pattern recognition"
+    heatmap = pattern or operation in EDGE_FILTERS
+    divisor = 9.0 if pattern and average_products else 1.0
     if heatmap or operation == "Gaussian smoothing":
         if heatmap:
+            if kernel is None and operation in EDGE_FILTERS:
+                kernel = EDGE_FILTERS[operation].copy()
             if kernel is None:
                 raise ValueError("Pattern recognition needs a 3 × 3 filter.")
             kernel = np.asarray(kernel, dtype=float)
             if kernel.shape != (3, 3) or not np.isfinite(kernel).all():
-                raise ValueError("Pattern recognition needs nine finite filter weights.")
+                raise ValueError(f"{operation} needs nine finite filter weights.")
         else:
             kernel = KERNELS["Gaussian blur"]
         size = 3
@@ -221,7 +299,7 @@ def apply_operation(
         else:
             output = preprocess(source, operation)
     return OperationResult(operation, work, output, bounds, size, stride, kernel,
-                           divisor, heatmap, heatmap)
+                           divisor, heatmap, pattern)
 
 
 def default_network() -> list[Layer]:

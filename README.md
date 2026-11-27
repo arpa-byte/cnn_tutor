@@ -1,33 +1,73 @@
 # CNN Teaching Lab
 
-A Streamlit classroom lab with two workspaces:
+An interactive dashboard for learning the mechanics of convolutional neural networks. Use it to follow a filter over an image, explore how a stack of operations changes a feature map, and practise calculating feature-map sizes by hand.
 
-- **Image processing:** downsampling (nearest neighbor), max/min/average pooling, Gaussian smoothing, min–max normalization to 0–1, and inversion. Dashboard definitions explain each operation, kernels/windows, stride, and padding. Toggle zero padding for smoothing; added border cells are highlighted orange in the input matrix. SAME padding adds only the cells needed for the chosen window and stride. Pooling uses no padding.
-- **CNN network builder:** start with a ten-layer feature extractor or an empty network. Add blocks from the palette, click a block to configure it, and use its arrows to reorder. Duplicate or remove the selected block. Watch preprocessing, moving convolution kernels, activation, and pooling build each output pixel.
+## Start the lab
 
-The same ten generated image patterns support 8 × 8 through 64 × 64 grids. Input pixels are unsigned 8-bit integers (0–255). Feature maps retain floating-point values, including negative values and values above 255. Display contrast rescaling is optional and never changes calculations. By default, brightness is clipped to 0–255; numeric labels show actual values.
-
-Blocks use fixed, editable filter choices; this is a demonstration of CNN feature extraction, **not training or classification**. Each block contains preprocessing, convolution, activation, and optional pooling. Pooling-only palette blocks use identity convolution with no activation. If a custom network shrinks its grid to nothing, execution stops at that block with an explanation.
+You need Python 3.10 or newer. Complete this setup once from the repository folder.
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-streamlit run cnn_teaching_lab.py
 ```
 
-The browser opens at the local URL printed by Streamlit. The image controls are shared across both tabs. Download the image settings and current architecture as JSON from the network builder.
-
-The playground shows the operation player by default: see the moving kernel/window and output built one pixel at a time, with the current calculation. Play, pause, restart, step forward, scrub, or change speed directly in the animation. All output positions are included; changing the input or operation resets playback. Per-pixel operations use a 1 × 1 cursor rather than a neighborhood kernel. Enable **Show only output** to replace the player with static input and output grids.
-
-Choose **Convolution for pattern recognition** for the slide-88-style example: a 9 × 9 X pattern encoded as −1/+1, an editable diagonal 3 × 3 filter, and a colored response heatmap. Alternatively, threshold the sidebar image at 128 into −1/+1 pixels. Edit the nine weights or use **Randomize 3 × 3 filter**, then **Run convolution** to apply them and reset playback. Adjust stride and optional zero padding; **Average the 9 products** divides each dot product by 9, matching the example. With binary pixels and weights, +1 means a perfect match and −1 an opposite pattern. Arbitrary weights can produce larger responses. Blue indicates negative responses, white zero, and red positive responses on a symmetric color scale. The player shows Input → Filter → Heatmap with the moving window and exact calculation; **Show only output** displays the completed result.
-
-Network playback also opens by default. **Entire network** follows all operations in order, moving each completed output to the input side for the next operation or layer. **One layer** plays only the chosen layer. Click a numbered layer inside the player to restart there; earlier layers are already calculated when jumping ahead. Use **Pause**, **Continue**, **Restart from beginning**, or **Restart selected layer**, and adjust speed or scrub the current operation. Editing the network or image resets playback. **Show only output** switches to static network input and final output; an expander contains the selected block's intermediate values and kernel weights.
-
-Numerical operations live in `image_processing.py`, separately from the Streamlit UI so they can be reused in a future frontend.
+Then start the dashboard with:
 
 ```bash
-python -m unittest discover -s tests
+./start
 ```
 
-The playback control tests also require Node.js to execute the embedded JavaScript.
+The launcher starts the dashboard in the background and opens it at [http://localhost:8501](http://localhost:8501). Streamlit output is written to a temporary log file, whose path is printed in the terminal.
+
+If the terminal reports `permission denied`, run this once and try again:
+
+```bash
+chmod +x start
+```
+
+## What to explore
+
+### Image processing
+
+Choose an input pattern and inspect common image operations.
+
+- Move through convolution and pooling one output pixel at a time.
+- Edit a 3 × 3 filter and observe the resulting feature map.
+- Compare VALID and SAME padding, and change stride where available.
+- Use **Show only output** when you want to compare just the input and completed result.
+
+The inputs are grayscale pixels from 0 to 255. Calculated feature maps use floating-point values, so filter responses can be negative or larger than 255. The contrast-rescale control changes only the display.
+
+### CNN network builder
+
+Build a sequential feature extractor from fixed filters. The restored example has ten processing blocks. Each block performs preprocessing, convolution, activation, and optional pooling.
+
+- Select a block to edit its filter, padding, stride, activation, and pooling settings.
+- Add, duplicate, remove, and reorder blocks.
+- Use the player to see an operation produce its output, then hand that output to the next operation.
+- Start from an empty network to construct your own sequence.
+
+This tab demonstrates feature extraction. It does not train a model or make class predictions.
+
+### CNN size practice
+
+Generate a random CNN and calculate the output feature-map size after every layer.
+
+1. Start with the displayed input size `H × W × C`.
+2. For each layer, enter its output height, width, and channel count.
+3. Select **Check my calculations** to find the first incorrect layer.
+4. Open the worked answers only after you want to review the solution.
+
+The flow chart shows the order of layers and their settings without revealing the sizes to calculate. For spatial dimensions, SAME padding gives `ceil(input / stride)`. VALID padding gives `floor((input - kernel) / stride) + 1`. A convolution’s output channels equal its number of filters, while max pooling keeps the channel count unchanged.
+
+## Optional checks
+
+Run the included project checks with:
+
+```bash
+.venv/bin/python -m unittest discover -s tests
+.venv/bin/python architecture_practice_checks.py
+```
+
+The playback-control checks require Node.js.

@@ -11,8 +11,9 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from image_processing import (
-    ACTIVATIONS, KERNELS, PATTERN_FILTER, PLAYGROUND_OPERATIONS, POOLING, PREPROCESSING, Layer,
-    apply_operation, default_network, make_samples, pattern_input, run_network,
+    ACTIVATIONS, EDGE_FILTERS, KERNELS, PATTERN_FILTER, PLAYGROUND_OPERATIONS, POOLING, PREPROCESSING,
+    Layer, apply_operation, default_network, make_samples, output_resolution,
+    pattern_input, random_architecture, run_network,
 )
 from operation_view import HEATMAP_COLORS, network_html, operation_html
 
@@ -51,7 +52,7 @@ def draw_grid(
     ))
     if heatmap:
         plot = ax.imshow(a, cmap=palette, vmin=-heat_limit, vmax=heat_limit, interpolation="nearest")
-        fig.colorbar(plot, ax=ax, shrink=.8, label="Pattern response")
+        fig.colorbar(plot, ax=ax, shrink=.8, label="Filter response")
     else:
         ax.imshow(shown, cmap="gray", vmin=0, vmax=255, interpolation="nearest")
     if original_bounds is not None:
@@ -98,10 +99,62 @@ def draw_grid(
         st.caption("Display clipped to 0–255; calculations and printed values are unchanged.")
 
 
-def randomize_pattern_filter():
+def randomize_filter(prefix: str):
     weights = np.random.default_rng().integers(-1, 2, (3, 3))
     for row, col in np.ndindex(3, 3):
-        st.session_state[f"pattern_weight_{row}_{col}"] = float(weights[row, col])
+        st.session_state[f"{prefix}_weight_{row}_{col}"] = float(weights[row, col])
+
+
+def filter_editor(kernel: np.ndarray, prefix: str) -> np.ndarray:
+    st.markdown("**Filter parameters · 3 × 3**")
+    weights = np.empty((3, 3))
+    for row in range(3):
+        cells = st.columns(3)
+        for col, cell in enumerate(cells):
+            key = f"{prefix}_weight_{row}_{col}"
+            if key not in st.session_state:
+                st.session_state[key] = float(kernel[row, col])
+            weights[row, col] = cell.number_input(
+                f"Weight ({row + 1}, {col + 1})", step=.25, format="%.2f", key=key,
+            )
+    return weights
+
+
+def edge_controls(operation: str, prefix: str) -> tuple[np.ndarray, int, str]:
+    run_key = f"{prefix}_run"
+    if run_key not in st.session_state:
+        st.session_state[run_key] = {
+            "kernel": EDGE_FILTERS[operation].copy(), "stride": 1, "padding": "valid",
+        }
+    settings = st.session_state[run_key]
+    st.markdown(f"#### {operation}")
+    st.caption("Edit or randomize the 3 × 3 weights, then click Run convolution. "
+               "The sidebar image stays in its original 0–255 range.")
+    st.button("Randomize 3 × 3 filter", on_click=randomize_filter, args=(prefix,),
+              key=f"{prefix}_randomize",
+              help="Fill the editor with random −1, 0, or +1 weights. Click Run convolution to apply.")
+    with st.form(f"{prefix}_filter_form"):
+        weights = filter_editor(settings["kernel"], prefix)
+        c1, c2 = st.columns(2)
+        stride = c1.selectbox("Stride", [1, 2, 3], index=settings["stride"] - 1,
+                             key=f"{prefix}_stride")
+        padded = c2.toggle(
+            "Padding", value=settings["padding"] == "same", key=f"{prefix}_padding",
+            help="On: SAME zero padding. Off: VALID. Padded zeros can create artificial border edges.",
+        )
+        if st.form_submit_button("Run convolution"):
+            if not np.isfinite(weights).all():
+                st.error("Filter weights must be finite numbers. The previous result is unchanged.")
+            else:
+                st.session_state[run_key] = {
+                    "kernel": weights, "stride": stride, "padding": "same" if padded else "valid",
+                }
+                revision_key = f"{prefix}_revision"
+                st.session_state[revision_key] = st.session_state.get(revision_key, 0) + 1
+    settings = st.session_state[run_key]
+    st.caption("Output uses the raw sum of pixel × weight products, without averaging, clipping, "
+               "or ReLU. Negative responses are preserved. The kernel is not flipped.")
+    return settings["kernel"], settings["stride"], settings["padding"]
 
 
 def pattern_controls(image: np.ndarray) -> tuple[np.ndarray, np.ndarray, int, str, bool]:
@@ -114,7 +167,7 @@ def pattern_controls(image: np.ndarray) -> tuple[np.ndarray, np.ndarray, int, st
     st.markdown("#### Convolution for image pattern recognition")
     st.caption("Inspired by slide 88: a −1/+1 input, a 3 × 3 filter, and a response heatmap. "
                "Edit or randomize the weights, then click Run convolution to apply them.")
-    st.button("Randomize 3 × 3 filter", on_click=randomize_pattern_filter,
+    st.button("Randomize 3 × 3 filter", on_click=randomize_filter, args=("pattern",),
               key="pattern_randomize",
               help="Fill the editor with random −1, 0, or +1 weights. Click Run convolution to apply.")
     with st.form("pattern_filter_form"):
@@ -122,17 +175,7 @@ def pattern_controls(image: np.ndarray) -> tuple[np.ndarray, np.ndarray, int, st
             "Pattern input", ["Slide-style X (9 × 9)", "Sidebar image (threshold at 128)"],
             index=0 if settings["input"] == "Slide-style X (9 × 9)" else 1,
         )
-        st.markdown("**Filter parameters · 3 × 3**")
-        weights = np.empty((3, 3))
-        for row in range(3):
-            cells = st.columns(3)
-            for col, cell in enumerate(cells):
-                key = f"pattern_weight_{row}_{col}"
-                if key not in st.session_state:
-                    st.session_state[key] = float(settings["kernel"][row, col])
-                weights[row, col] = cell.number_input(
-                    f"Weight ({row + 1}, {col + 1})", step=.25, format="%.2f", key=key,
-                )
+        weights = filter_editor(settings["kernel"], "pattern")
         c1, c2 = st.columns(2)
         stride = c1.selectbox("Stride", [1, 2, 3], index=settings["stride"] - 1,
                              key="pattern_stride")
@@ -166,9 +209,15 @@ def playground(image: np.ndarray, show_values: bool, cell_size: int, rescale: bo
     st.info(PLAYGROUND_OPERATIONS[operation])
     size, stride, factor, padding = 2, 1, 2, "valid"
     kernel, average = None, True
-    windowed = operation in ("Gaussian smoothing", "Convolution for pattern recognition") or operation in POOLING
+    filter_prefix = None
+    windowed = (operation in ("Gaussian smoothing", "Convolution for pattern recognition")
+                or operation in EDGE_FILTERS or operation in POOLING)
     if operation == "Convolution for pattern recognition":
         image, kernel, stride, padding, average = pattern_controls(image)
+        filter_prefix = "pattern"
+    elif operation in EDGE_FILTERS:
+        filter_prefix = "edge" if operation == "Edge detection" else "vertical_edge"
+        kernel, stride, padding = edge_controls(operation, filter_prefix)
     elif windowed:
         c1, c2 = st.columns(2)
         if operation == "Gaussian smoothing":
@@ -212,7 +261,7 @@ def playground(image: np.ndarray, show_values: bool, cell_size: int, rescale: bo
                      help="Hide the operation player and show only the input and output grids."):
         st.caption("Use Play, Pause, Restart, Next pixel, or scrub the Built pixels slider. "
                    "Changing the image or operation resets playback.")
-        run_id = st.session_state.get("pattern_revision", 0) if result.heatmap else None
+        run_id = st.session_state.get(f"{filter_prefix}_revision", 0) if filter_prefix else None
         components.html(operation_html(result, show_values, rescale, run_id), height=850, scrolling=True)
     else:
         if result.heatmap:
@@ -418,6 +467,120 @@ def network_builder(image: np.ndarray, show_values: bool, cell_size: int, rescal
     )
 
 
+def architecture_practice():
+    st.subheader("CNN feature-map size practice")
+    st.caption("Work out the output height, width, and channels after every layer. "
+               "Convolutions use their stated number of filters. Pooling preserves channels.")
+    if "architecture_problem" not in st.session_state:
+        st.session_state.architecture_problem = random_architecture()
+        st.session_state.architecture_problem_version = 0
+    if st.button("Generate a new network", use_container_width=True):
+        st.session_state.architecture_problem = random_architecture()
+        st.session_state.architecture_problem_version += 1
+        st.rerun()
+
+    input_shape, layers = st.session_state.architecture_problem
+    version = st.session_state.architecture_problem_version
+    st.markdown("#### Input feature map")
+    st.code(f"{input_shape[0]} × {input_shape[1]} × {input_shape[2]}  (H × W × C)")
+    st.info("For height and width, SAME gives ceil(input ÷ stride). "
+            "VALID gives floor((input − kernel) ÷ stride) + 1. "
+            "A convolution's output channels equal its number of filters. "
+            "Max pooling keeps the input channel count.")
+    calculations, diagram = st.columns([3, 2])
+    with diagram:
+        st.markdown("#### Network flow")
+        graph_lines = [
+            "digraph architecture {",
+            'rankdir=TB; bgcolor="transparent"; nodesep=.35; ranksep=.45;',
+            'node [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=10, margin=".18,.09"];',
+            f'input [label="Input\\n{input_shape[0]} × {input_shape[1]} × {input_shape[2]}", '
+            'fillcolor="#dceeff", color="#4b86b4"];',
+        ]
+        previous = "input"
+        for index, layer in enumerate(layers, start=1):
+            filter_text = f"\\n{layer.output_channels} filters" if layer.output_channels else "\\nkeep channels"
+            fill = "#e5f5e8" if layer.operation == "Convolution" else "#fff1d6"
+            graph_lines.extend([
+                f'layer{index} [label="{index}. {layer.operation}\\n'
+                f'{layer.kernel_size} × {layer.kernel_size}, stride {layer.stride}, {layer.padding}'
+                f'{filter_text}\\nOutput: ? × ? × ?", fillcolor="{fill}"];',
+                f"{previous} -> layer{index};",
+            ])
+            previous = f"layer{index}"
+        graph_lines.append("}")
+        flow_chart_height = 104 * len(layers)
+        st.graphviz_chart("\n".join(graph_lines), use_container_width=True, height=flow_chart_height)
+
+    with calculations:
+        st.markdown("#### Calculate each output feature map")
+        answers: list[tuple[str, str, str]] = []
+        for index, layer in enumerate(layers, start=1):
+            details = (
+                f"{layer.output_channels} output filters"
+                if layer.operation == "Convolution" else "Preserves input channels"
+            )
+            st.markdown(
+                f"**Layer {index} · {layer.operation}**  "
+                f"Kernel {layer.kernel_size} × {layer.kernel_size} · "
+                f"Stride {layer.stride} · Padding {layer.padding} · {details}"
+            )
+            height, width, channels = st.columns(3)
+            answers.append((
+                height.text_input("Output height", key=f"architecture_{version}_{index}_height",
+                                  placeholder="H"),
+                width.text_input("Output width", key=f"architecture_{version}_{index}_width",
+                                 placeholder="W"),
+                channels.text_input("Output channels", key=f"architecture_{version}_{index}_channels",
+                                    placeholder="C"),
+            ))
+
+        if st.button("Check my calculations", type="primary", use_container_width=True):
+            expected_shapes = []
+            current_shape = input_shape
+            for layer in layers:
+                current_shape = output_resolution(*current_shape, layer)
+                expected_shapes.append(current_shape)
+            parsed_answers: list[tuple[int, int, int] | None] = []
+            for answer in answers:
+                try:
+                    values = tuple(int(value.strip()) for value in answer)
+                    if len(values) != 3 or min(values) < 1:
+                        raise ValueError
+                    parsed_answers.append(values)
+                except ValueError:
+                    parsed_answers.append(None)
+            if any(answer is None for answer in parsed_answers):
+                st.warning("Enter a positive whole number for height, width, and channels at every layer.")
+                return
+            first_error = next(
+                (index for index, (answer, expected) in enumerate(zip(parsed_answers, expected_shapes), start=1)
+                 if answer != expected),
+                None,
+            )
+            if first_error is None:
+                st.success("Every feature-map size is correct.")
+            else:
+                expected = expected_shapes[first_error - 1]
+                entered = parsed_answers[first_error - 1]
+                st.error(f"The first incorrect result is layer {first_error}. "
+                         f"You entered {entered[0]} × {entered[1]} × {entered[2]}. "
+                         f"The correct output is {expected[0]} × {expected[1]} × {expected[2]}.")
+                with st.expander("Show the worked answers"):
+                    st.dataframe([
+                        {
+                            "Layer": index,
+                            "Operation": layer.operation,
+                            "Kernel": f"{layer.kernel_size} × {layer.kernel_size}",
+                            "Stride": layer.stride,
+                            "Padding": layer.padding,
+                            "Filters": layer.output_channels if layer.output_channels is not None else "—",
+                            "Output H × W × C": " × ".join(map(str, expected)),
+                        }
+                        for index, (layer, expected) in enumerate(zip(layers, expected_shapes), start=1)
+                    ], use_container_width=True, hide_index=True)
+
+
 def main():
     st.set_page_config(page_title="CNN Teaching Lab", page_icon="▦", layout="wide")
     st.title("CNN Teaching Lab")
@@ -441,11 +604,15 @@ def main():
                                  "On: stretch each nonconstant feature map to 0–255.")
         st.info("Inputs are 8-bit. Feature maps use floating-point numbers so negative edges, "
                 "averages, and values above 255 are not lost.")
-    playground_tab, network_tab = st.tabs(["Image processing", "CNN network builder"])
+    playground_tab, network_tab, architecture_tab = st.tabs(
+        ["Image processing", "CNN network builder", "CNN size practice"]
+    )
     with playground_tab:
         playground(samples[choice], show_values, cell_size, rescale)
     with network_tab:
         network_builder(samples[choice], show_values, cell_size, rescale)
+    with architecture_tab:
+        architecture_practice()
 
 
 if __name__ == "__main__":

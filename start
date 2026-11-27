@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd "$(dirname "$0")"
+
+if [[ ! -x .venv/bin/streamlit ]]; then
+    echo "Missing .venv/bin/streamlit. Create the virtual environment and install requirements first." >&2
+    exit 1
+fi
+
+log_file="$(mktemp "${TMPDIR:-/tmp}/cnn-tutor.XXXXXX.log")"
+.venv/bin/streamlit run cnn_teaching_lab.py --server.headless true --logger.level error \
+    >"$log_file" 2>&1 &
+server_pid=$!
+
+sleep 1
+if ! kill -0 "$server_pid" 2>/dev/null; then
+    echo "CNN Tutor could not start. Check $log_file" >&2
+    exit 1
+fi
+
+open "http://localhost:8501" >/dev/null 2>&1 || true
+echo "CNN Tutor is starting at http://localhost:8501"
+echo "Streamlit output is in $log_file"
