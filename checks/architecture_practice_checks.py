@@ -1,6 +1,9 @@
 import unittest
+from pathlib import Path
+import sys
 
-from image_processing import ArchitectureLayer, output_resolution, random_architecture
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from app.image_processing import ArchitectureLayer, output_resolution, random_architecture
 
 
 class ArchitecturePracticeTests(unittest.TestCase):

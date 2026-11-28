@@ -3,7 +3,7 @@ import unittest
 import numpy as np
 from streamlit.testing.v1 import AppTest
 
-from image_processing import PATTERN_FILTER, apply_operation, pattern_input
+from app.image_processing import PATTERN_FILTER, apply_operation, pattern_input
 from test_operation_view import player_data
 
 
@@ -45,8 +45,8 @@ class PatternRecognitionTests(unittest.TestCase):
 
     def test_edit_randomize_and_run_apply_only_submitted_filter(self):
         app = AppTest.from_string("""
-from cnn_teaching_lab import playground
-from image_processing import make_samples
+from app.cnn_teaching_lab import playground
+from app.image_processing import make_samples
 playground(make_samples(8)["Horizontal gradient"], True, 25, False)
 """, default_timeout=30).run()
         app.selectbox[0].select(OPERATION).run()

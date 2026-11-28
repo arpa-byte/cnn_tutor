@@ -3,7 +3,7 @@ import unittest
 import numpy as np
 from streamlit.testing.v1 import AppTest
 
-from image_processing import EDGE_FILTERS, apply_operation, make_samples
+from app.image_processing import EDGE_FILTERS, apply_operation, make_samples
 from test_operation_view import player_data
 
 
@@ -39,8 +39,8 @@ class EdgeDetectionTests(unittest.TestCase):
 
     def test_editable_detectors_keep_separate_applied_filters(self):
         app = AppTest.from_string("""
-from cnn_teaching_lab import playground
-from image_processing import make_samples
+from app.cnn_teaching_lab import playground
+from app.image_processing import make_samples
 playground(make_samples(8)["Horizontal gradient"], False, 25, False)
 """, default_timeout=30).run()
         applied_kernels = {}

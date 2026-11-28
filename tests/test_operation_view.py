@@ -5,8 +5,8 @@ import unittest
 
 import numpy as np
 
-from image_processing import KERNELS, Layer, apply_operation, run_network
-from operation_view import network_html, operation_html
+from app.image_processing import KERNELS, Layer, apply_operation, run_network
+from app.operation_view import network_html, operation_html
 
 
 def player_data(html):

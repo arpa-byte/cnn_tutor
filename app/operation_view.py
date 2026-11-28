@@ -3,7 +3,10 @@ from __future__ import annotations
 
 import json
 
-from image_processing import KERNELS, OperationResult, Stage, pad_window
+try:
+    from .image_processing import KERNELS, OperationResult, Stage, pad_window
+except ImportError:
+    from image_processing import KERNELS, OperationResult, Stage, pad_window
 
 
 HEATMAP_COLORS = ((59, 76, 192), (245, 245, 245), (180, 4, 38))

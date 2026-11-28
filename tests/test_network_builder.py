@@ -7,8 +7,8 @@ class NetworkBuilderTests(unittest.TestCase):
     def test_click_edit_duplicate_reorder_remove_and_restore(self):
         app = AppTest.from_string("""
 import streamlit as st
-from cnn_teaching_lab import network_builder
-from image_processing import Layer, make_samples
+from app.cnn_teaching_lab import network_builder
+from app.image_processing import Layer, make_samples
 if "layers" not in st.session_state:
     st.session_state.layers = [Layer(name="First"), Layer(name="Second")]
     st.session_state.image_choice = "Horizontal gradient"

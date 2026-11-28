@@ -2,29 +2,23 @@
 
 An interactive dashboard for learning the mechanics of convolutional neural networks. Use it to follow a filter over an image, explore how a stack of operations changes a feature map, and practise calculating feature-map sizes by hand.
 
-## Start the lab
+## Launch the dashboard
 
-You need Python 3.10 or newer. Complete this setup once from the repository folder.
+You need Python 3.10 or newer. Every platform entry point uses the same `start.py` launcher. On its first run, it creates `.venv` and installs the required packages. Later launches reuse that environment.
+
+- **macOS**. Double-click **CNN Dash (MAC).app** in Finder. From Terminal, run `./start`.
+- **Windows**. Double-click **CNN Dash (Windows).bat**. The first launch creates a same-named Windows shortcut with the supplied icon.
+- **Linux**. Run `python3 start.py` from the repository folder.
+
+The launcher opens the dashboard in your default browser at [http://localhost:8501](http://localhost:8501). Closing the dashboard tab or browser stops its local server after roughly 20 seconds. A first launch without a browser connection stops after roughly 90 seconds.
+
+To install packages without opening the dashboard on macOS or Linux, run:
 
 ```bash
 ./install
 ```
 
-Then start the dashboard with:
-
-```bash
-./start
-```
-
-The launcher starts the dashboard in the background and opens it at [http://localhost:8501](http://localhost:8501). Closing the dashboard tab stops its local server shortly afterwards, so it does not remain running in the background.
-
-On macOS, you can also double-click **CNN Tutor.app** in Finder. Its CNN icon runs the same setup and launcher.
-
-## Platform support
-
-The included launchers are designed for macOS. Linux and Windows need platform-specific launch scripts before students can use the one-step launch workflow.
-
-If the terminal reports `permission denied`, run this once and try again:
+If macOS reports `permission denied` for a terminal launcher, run this once and try again:
 
 ```bash
 chmod +x install start
@@ -71,7 +65,7 @@ Run the included project checks with:
 
 ```bash
 .venv/bin/python -m unittest discover -s tests
-.venv/bin/python architecture_practice_checks.py
+.venv/bin/python checks/architecture_practice_checks.py
 ```
 
 The playback-control checks require Node.js.

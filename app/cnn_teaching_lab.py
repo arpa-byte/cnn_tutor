@@ -1,7 +1,8 @@
-"""Interactive CNN teaching lab. Run: streamlit run cnn_teaching_lab.py."""
+"""Interactive CNN teaching lab. Run: streamlit run app/cnn_teaching_lab.py."""
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import asdict, replace
 
 import matplotlib.pyplot as plt
@@ -10,12 +11,20 @@ import numpy as np
 import streamlit as st
 import streamlit.components.v1 as components
 
-from image_processing import (
-    ACTIVATIONS, EDGE_FILTERS, KERNELS, PATTERN_FILTER, PLAYGROUND_OPERATIONS, POOLING, PREPROCESSING,
-    Layer, apply_operation, default_network, make_samples, output_resolution,
-    pattern_input, random_architecture, run_network,
-)
-from operation_view import HEATMAP_COLORS, network_html, operation_html
+try:
+    from .image_processing import (
+        ACTIVATIONS, EDGE_FILTERS, KERNELS, PATTERN_FILTER, PLAYGROUND_OPERATIONS, POOLING, PREPROCESSING,
+        Layer, apply_operation, default_network, make_samples, output_resolution,
+        pattern_input, random_architecture, run_network,
+    )
+    from .operation_view import HEATMAP_COLORS, network_html, operation_html
+except ImportError:
+    from image_processing import (
+        ACTIVATIONS, EDGE_FILTERS, KERNELS, PATTERN_FILTER, PLAYGROUND_OPERATIONS, POOLING, PREPROCESSING,
+        Layer, apply_operation, default_network, make_samples, output_resolution,
+        pattern_input, random_architecture, run_network,
+    )
+    from operation_view import HEATMAP_COLORS, network_html, operation_html
 
 
 def draw_grid(
@@ -581,8 +590,29 @@ def architecture_practice():
                     ], use_container_width=True, hide_index=True)
 
 
+def launcher_heartbeat():
+    """Tell the local launcher that the dashboard browser tab is still open."""
+    port = os.environ.get("CNN_TUTOR_HEARTBEAT_PORT")
+    if not port:
+        return
+    components.html(
+        f"""
+        <script>
+        const heartbeat = () => fetch(
+            "http://127.0.0.1:{port}/heartbeat",
+            {{ mode: "no-cors", cache: "no-store" }},
+        ).catch(() => {{}});
+        heartbeat();
+        window.setInterval(heartbeat, 5000);
+        </script>
+        """,
+        height=0,
+    )
+
+
 def main():
     st.set_page_config(page_title="CNN Teaching Lab", page_icon="▦", layout="wide")
+    launcher_heartbeat()
     st.title("CNN Teaching Lab")
     st.caption("Generate pixels. Explore filters. Build a feature extractor.")
     if "layers" not in st.session_state:
