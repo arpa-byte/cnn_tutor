@@ -7,9 +7,7 @@ An interactive dashboard for learning the mechanics of convolutional neural netw
 You need Python 3.10 or newer. Complete this setup once from the repository folder.
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+./install
 ```
 
 Then start the dashboard with:
@@ -18,12 +16,18 @@ Then start the dashboard with:
 ./start
 ```
 
-The launcher starts the dashboard in the background and opens it at [http://localhost:8501](http://localhost:8501). Streamlit output is written to a temporary log file, whose path is printed in the terminal.
+The launcher starts the dashboard in the background and opens it at [http://localhost:8501](http://localhost:8501). Closing the dashboard tab stops its local server shortly afterwards, so it does not remain running in the background.
+
+On macOS, you can also double-click **CNN Tutor.app** in Finder. Its CNN icon runs the same setup and launcher.
+
+## Platform support
+
+The included launchers are designed for macOS. Linux and Windows need platform-specific launch scripts before students can use the one-step launch workflow.
 
 If the terminal reports `permission denied`, run this once and try again:
 
 ```bash
-chmod +x start
+chmod +x install start
 ```
 
 ## What to explore
